@@ -20,6 +20,7 @@ import (
 var (
 	_ provider.MovieProvider = (*ThePornDBVideo)(nil)
 	_ provider.MovieSearcher = (*ThePornDBVideo)(nil)
+	_ provider.ConfigSetter  = (*ThePornDBVideo)(nil)
 )
 
 const (
@@ -70,8 +71,8 @@ func NewThePornDBMovie() *ThePornDBVideo {
 	return new(MovieProviderName, movieBaseURL, moviePageURL, apiGetMovieURL, apiSearchMovieURL)
 }
 
-func (s *ThePornDBVideo) SetConfig(config map[string]string) error {
-	if accessToken, ok := config["ACCESS_TOKEN"]; ok {
+func (s *ThePornDBVideo) SetConfig(config provider.Config) error {
+	if accessToken, err := config.GetString("ACCESS_TOKEN"); err == nil {
 		s.accessToken = accessToken
 	}
 	return nil
