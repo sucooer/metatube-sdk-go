@@ -2,6 +2,7 @@ package route
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"net/http"
 	"strconv"
@@ -66,15 +67,15 @@ func getImage(app *engine.Engine, typ imageType) gin.HandlerFunc {
 			return
 		}
 
-		// TODO: how to handle providers that implement
-		//   both actor and movie provider interfaces?
-		var isActorProvider bool
-		switch {
-		case app.IsActorProvider(uri.Provider):
-			isActorProvider = true
-		case app.IsMovieProvider(uri.Provider):
-			isActorProvider = false
-		default:
+		// A provider name may implement both the actor and the movie
+		// provider interfaces (e.g. "Merged"). Actors have no
+		// thumb/backdrop images, and movie codes and person names are
+		// disjoint ID spaces, so resolve the kind from the image type
+		// and fall back between the two lookups for primary images
+		// instead of preferring one interface outright.
+		isActorProvider := app.IsActorProvider(uri.Provider)
+		isMovieProvider := app.IsMovieProvider(uri.Provider)
+		if !isActorProvider && !isMovieProvider {
 			abortWithError(c, mt.ErrProviderNotFound)
 			return
 		}
@@ -95,23 +96,29 @@ func getImage(app *engine.Engine, typ imageType) gin.HandlerFunc {
 				query.Ratio = ratio
 			}
 			img, err = app.GetImageByURL(provider, query.URL, query.Ratio, query.Position, query.Auto)
-		} else if isActorProvider /* actor */ {
-			switch typ {
-			case primaryImageType:
-				img, err = app.GetActorPrimaryImage(uri.AsProviderID())
-			case thumbImageType, backdropImageType:
+		} else if typ != primaryImageType /* thumb/backdrop: movies only */ {
+			if !isMovieProvider {
 				abortWithStatusMessage(c, http.StatusBadRequest, "unsupported image type")
 				return
 			}
-		} else /* movie */ {
 			switch typ {
-			case primaryImageType:
-				img, err = app.GetMoviePrimaryImage(uri.AsProviderID(), query.Ratio, query.Position)
 			case thumbImageType:
 				img, err = app.GetMovieThumbImage(uri.AsProviderID())
 			case backdropImageType:
 				img, err = app.GetMovieBackdropImage(uri.AsProviderID())
 			}
+		} else if isActorProvider && isMovieProvider /* dual provider */ {
+			// Movie codes never resolve as actor names and vice
+			// versa, so try the movie lookup first and fall back
+			// to the actor lookup when the movie is not found.
+			img, err = app.GetMoviePrimaryImage(uri.AsProviderID(), query.Ratio, query.Position)
+			if errors.Is(err, mt.ErrInfoNotFound) {
+				img, err = app.GetActorPrimaryImage(uri.AsProviderID())
+			}
+		} else if isMovieProvider /* movie only */ {
+			img, err = app.GetMoviePrimaryImage(uri.AsProviderID(), query.Ratio, query.Position)
+		} else /* actor only */ {
+			img, err = app.GetActorPrimaryImage(uri.AsProviderID())
 		}
 		if err != nil {
 			abortWithError(c, err)
