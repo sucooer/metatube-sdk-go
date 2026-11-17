@@ -464,6 +464,15 @@ func (w *Wikipedia) buildActorInfo(qid string, entity *wdEntity) (*model.ActorIn
 			info.Birthday = parser.ParseDate(page.birthday)
 		}
 	}
+	// The REST summary extract is the primary Summary source: the
+	// scraped overview above is empty in practice (the paragraph
+	// selectors do not match current Wikipedia HTML), while the REST
+	// API reliably returns the lead extract. Prefer the Chinese
+	// article, then Japanese, then English. Any failure leaves the
+	// scraped overview (possibly empty) in place.
+	if summary := w.fetchSummary(entity.Sitelinks); summary != "" {
+		info.Summary = summary
+	}
 	return info, nil
 }
 
@@ -496,6 +505,47 @@ func (w *Wikipedia) fetchWikiPage(sitelinks map[string]wdSitelink) *wikiPage {
 		}
 	}
 	return nil
+}
+
+// wikiSummaryResponse is the subset of the Wikipedia REST summary API
+// response we need:
+// https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title}
+type wikiSummaryResponse struct {
+	Extract string `json:"extract"`
+}
+
+// fetchSummary fetches the article lead extract via the Wikipedia REST
+// summary API, preferring the Chinese article (the user reads Chinese;
+// Amane's bios came from zh.wikipedia), then Japanese, then English.
+// The request carries the provider's User-Agent (MetaTube-SDK/1.0).
+// Any failure yields an empty summary; errors never propagate.
+func (w *Wikipedia) fetchSummary(sitelinks map[string]wdSitelink) string {
+	for _, lang := range []string{"zh", "ja", "en"} {
+		link, ok := sitelinks[lang+"wiki"]
+		if !ok || link.Title == "" {
+			continue
+		}
+		title := strings.ReplaceAll(link.Title, " ", "_")
+		pageURL := fmt.Sprintf("https://%s.wikipedia.org/api/rest_v1/page/summary/%s",
+			lang, url.PathEscape(title))
+		var resp wikiSummaryResponse
+		if err := w.fetchJSON(pageURL, &resp); err != nil {
+			continue
+		}
+		if extract := strings.TrimSpace(resp.Extract); extract != "" {
+			return clipSummary(extract)
+		}
+	}
+	return ""
+}
+
+// clipSummary bounds the extract to the same length budget as the
+// scraped overview, cutting at a sentence boundary when possible.
+func clipSummary(extract string) string {
+	if len([]rune(extract)) <= overviewMaxChars {
+		return extract
+	}
+	return cutAtSentence(extract, overviewMaxChars)
 }
 
 func wikiURL(lang, title string) string {
