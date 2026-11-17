@@ -464,12 +464,12 @@ func (w *Wikipedia) buildActorInfo(qid string, entity *wdEntity) (*model.ActorIn
 			info.Birthday = parser.ParseDate(page.birthday)
 		}
 	}
-	// The REST summary extract is the primary Summary source: the
+	// The full-article extract is the primary Summary source: the
 	// scraped overview above is empty in practice (the paragraph
-	// selectors do not match current Wikipedia HTML), while the REST
-	// API reliably returns the lead extract. Prefer the Chinese
-	// article, then Japanese, then English. Any failure leaves the
-	// scraped overview (possibly empty) in place.
+	// selectors do not match current Wikipedia HTML), while the
+	// action API reliably returns the full article text. Prefer the
+	// Chinese article, then Japanese, then English. Any failure
+	// leaves the scraped overview (possibly empty) in place.
 	if summary := w.fetchSummary(entity.Sitelinks); summary != "" {
 		info.Summary = summary
 	}
@@ -507,45 +507,72 @@ func (w *Wikipedia) fetchWikiPage(sitelinks map[string]wdSitelink) *wikiPage {
 	return nil
 }
 
-// wikiSummaryResponse is the subset of the Wikipedia REST summary API
-// response we need:
-// https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title}
-type wikiSummaryResponse struct {
-	Extract string `json:"extract"`
+// wikiExtractResponse is the subset of the MediaWiki action API
+// extracts response we need (formatversion=2):
+// https://{lang}.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&redirects=1&titles={title}&format=json&formatversion=2
+type wikiExtractResponse struct {
+	Query struct {
+		Pages []struct {
+			Missing bool   `json:"missing"`
+			Extract string `json:"extract"`
+		} `json:"pages"`
+	} `json:"query"`
 }
 
-// fetchSummary fetches the article lead extract via the Wikipedia REST
-// summary API, preferring the Chinese article (the user reads Chinese;
-// Amane's bios came from zh.wikipedia), then Japanese, then English.
-// The request carries the provider's User-Agent (MetaTube-SDK/1.0).
-// Any failure yields an empty summary; errors never propagate.
+// fetchSummary fetches the FULL article plain text via the MediaWiki
+// action API (prop=extracts&explaintext), preferring the Chinese
+// article (the user reads Chinese; Amane's bios came from
+// zh.wikipedia), then Japanese, then English. The request carries the
+// provider's User-Agent (MetaTube-SDK/1.0). The text is returned
+// without truncation: only surrounding whitespace is trimmed and runs
+// of blank lines collapsed. Any failure yields an empty summary;
+// errors never propagate.
 func (w *Wikipedia) fetchSummary(sitelinks map[string]wdSitelink) string {
 	for _, lang := range []string{"zh", "ja", "en"} {
 		link, ok := sitelinks[lang+"wiki"]
 		if !ok || link.Title == "" {
 			continue
 		}
-		title := strings.ReplaceAll(link.Title, " ", "_")
-		pageURL := fmt.Sprintf("https://%s.wikipedia.org/api/rest_v1/page/summary/%s",
-			lang, url.PathEscape(title))
-		var resp wikiSummaryResponse
+		pageURL := fmt.Sprintf("https://%s.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&redirects=1&titles=%s&format=json&formatversion=2",
+			lang, url.QueryEscape(link.Title))
+		var resp wikiExtractResponse
 		if err := w.fetchJSON(pageURL, &resp); err != nil {
 			continue
 		}
-		if extract := strings.TrimSpace(resp.Extract); extract != "" {
-			return clipSummary(extract)
+		for _, page := range resp.Query.Pages {
+			if page.Missing {
+				continue
+			}
+			if extract := normalizeExtract(page.Extract); extract != "" {
+				return extract
+			}
 		}
 	}
 	return ""
 }
 
-// clipSummary bounds the extract to the same length budget as the
-// scraped overview, cutting at a sentence boundary when possible.
-func clipSummary(extract string) string {
-	if len([]rune(extract)) <= overviewMaxChars {
-		return extract
+// normalizeExtract trims surrounding whitespace and collapses runs of
+// blank lines to a single blank line. It never truncates the text.
+func normalizeExtract(extract string) string {
+	extract = strings.TrimSpace(extract)
+	if extract == "" {
+		return ""
 	}
-	return cutAtSentence(extract, overviewMaxChars)
+	var out []string
+	blank := false
+	for _, line := range strings.Split(extract, "\n") {
+		line = strings.TrimRight(line, " \t\r")
+		if line == "" {
+			if blank {
+				continue
+			}
+			blank = true
+		} else {
+			blank = false
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func wikiURL(lang, title string) string {
