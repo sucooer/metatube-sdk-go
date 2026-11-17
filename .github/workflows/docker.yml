@@ -8,8 +8,13 @@ on:
   push:
     branches:
       - 'main'
+      - 'more-sources'
     tags:
       - '*'
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
 
@@ -42,6 +47,7 @@ jobs:
 
       - name: Get Version
         id: shell
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           echo "version=$(git describe --abbrev=0 --tags HEAD | cut -d'v' -f 2)" >> $GITHUB_OUTPUT
 
@@ -54,7 +60,20 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/metatube-community/metatube-server:dev
+            ghcr.io/sucooer/metatube-server:dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and Push (dev branch)
+        if: github.ref == 'refs/heads/more-sources'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/sucooer/metatube-server:more-sources
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -67,7 +86,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/metatube-community/metatube-server:latest
-            ghcr.io/metatube-community/metatube-server:${{ steps.shell.outputs.version }}
+            ghcr.io/sucooer/metatube-server:latest
+            ghcr.io/sucooer/metatube-server:${{ steps.shell.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
